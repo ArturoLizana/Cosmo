@@ -5,15 +5,10 @@ from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import FastEmbedEmbeddings
-#from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 
-
-# Dossier par défaut pour persister chromaDB sous windows
+# Dossier par défaut pour persister ChromaDB
 CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", os.path.join(os.path.dirname(__file__), "..", "chroma_db"))
-
-# Initialisation du modèle d'embedding
-# embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 # Initialisation du modèle d'embedding léger (compatible avec Render 512 Mo)
 embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
