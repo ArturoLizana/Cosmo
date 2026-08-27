@@ -1,0 +1,11 @@
+.env
+.env.local
+*.env
+__pycache__/
+*.pyc
+venv/
+env/
+data/
+chroma_db/
+frontend/node_modules/
+frontend/dist/

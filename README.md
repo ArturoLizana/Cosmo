@@ -33,7 +33,7 @@ cosmo/
 
 2. Configuration du Backend
  -Cloner le projet
-  git clone <https://github.com/votre-compte/cosmo-rag.git>
+  git clone <https://github.com/ArturoLizana/Cosmo.git>
  -cd cosmo-rag
 
  -Créer et activer l'environnement virtuel Python
