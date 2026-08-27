@@ -5,16 +5,14 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_community.vectorstores import Chroma
-# from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 
-# 1. Charger les variables d'environnement depuis le .env à la racine
+# Charger les variables d'environnement (.env local)
 dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
-# Import du module d'ingestion local
 from backend.ingest import ingest_source, CHROMA_DB_DIR
 
 app = FastAPI(
@@ -23,37 +21,28 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Gestion dynamique des origines CORS
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS", 
-    "https://cosmo.arlidev.fr,http://localhost:5173"
-).split(",")
+# Nettoyage strict des origines CORS
+raw_origins = os.getenv("ALLOWED_ORIGINS", "https://cosmo.arlidev.fr,http://localhost:5173")
+ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Chargement du modèle d'embedding (local)
-# embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
-# Chargement du modèle d'embedding (version légère compatible avec Render)
+# Initialisation du modèle d'embedding léger (FastEmbed)
 embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
-# 2. Récupérer la clé d'API depuis .env
-groq_api_key = os.getenv("GROQ_API_KEY")
-
-if not groq_api_key:
-    raise ValueError("La variable GROQ_API_KEY est introuvable ou vide dans le fichier .env")
-
-# Injection dans les variables d'environnement système pour LangChain/Groq
-os.environ["GROQ_API_KEY"] = groq_api_key
-
-# 3. Initialisation du modèle Groq
-llm = ChatGroq(model_name="openai/gpt-oss-20b", temperature=0)
+# Utilisation d'un modèle officiel valide chez Groq (llama-3.3-70b-versatile ou llama-3.1-8b-instant)
+groq_api_key = os.getenv("GROQ_API_KEY", "")
+llm = ChatGroq(
+    model_name="llama-3.1-8b-instant", 
+    temperature=0, 
+    groq_api_key=groq_api_key if groq_api_key else None
+)
 
 class QueryRequest(BaseModel):
     question: str
@@ -94,7 +83,11 @@ async def ingest_file(file: UploadFile = File(...)):
             "path": file_path
         }
     except Exception as e:
+        print(f"Erreur d'ingestion : {e}")
         raise HTTPException(status_code=500, detail=f"Erreur d'ingestion : {str(e)}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 @app.post("/ingest/api")
 async def ingest_api(request: APIIngestRequest):
@@ -132,7 +125,7 @@ async def query_rag(request: QueryRequest):
 
         prompt = f"""Tu es un assistant virtuel d'entreprise rigoureux.
 Réponds à la question en t'appuyant uniquement sur le contexte ci-dessous.
-Si le contexte ne contient pas la réponse, réponds strictement : "L'information n'est pas présente dans les documents fournis."
+Si le contexte ne contient pas la réponse, réponds strictly : "L'information n'est pas présente dans les documents fournis."
 
 Contexte :
 {context_text}
@@ -143,17 +136,8 @@ Réponse :"""
         response = llm.invoke(prompt)
         answer_text = response.content if hasattr(response, "content") else str(response)
 
-        sources = [
-            {
-                "source": doc.metadata.get("source", "Inconnue"),
-                "page": doc.metadata.get("page", None)
-            }
-            for doc in docs
-        ]
-
         return {
-            "answer": answer_text,
-            #"sources": sources
+            "answer": answer_text
         }
 
     except Exception as e:
