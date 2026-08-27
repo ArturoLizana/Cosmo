@@ -10,11 +10,17 @@ from langchain_community.vectorstores import Chroma
 # Dossier par défaut pour persister ChromaDB
 CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", os.path.join(os.path.dirname(__file__), "..", "chroma_db"))
 
-# Initialisation du modèle d'embedding léger (compatible avec Render 512 Mo)
-embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+# Lazy Loading de FastEmbed pour économiser la mémoire et éviter d'épuiser la RAM au démarrage
+embeddings_instance = None
+
+def get_embeddings():
+    global embeddings_instance
+    if embeddings_instance is None:
+        embeddings_instance = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    return embeddings_instance
 
 def load_pdf(file_path: str) -> List[Document]:
-    """Charge un ficgier PDF local."""
+    """Charge un fichier PDF local."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Fichier non trouvé : {file_path}")
     loader = PyPDFLoader(file_path)
@@ -28,22 +34,17 @@ def load_docx(file_path: str) -> List[Document]:
     return loader.load()
 
 def load_json_api(api_url: str, text_key: str = None) -> List[Document]:
-    """
-    Récupère des données JSON depuis une API REST et le transforme en Documents LangChain.
-    
-    :param api_url: URL de l'API REST
-    :param text_key: Clé spécifique du JSON à utiliser pour le texte (optionnel)
-    """
+    """Récupère des données JSON depuis une API REST et les transforme en Documents LangChain."""
     response = requests.get(api_url)
     response.raise_for_status()
     data = response.json()
     
     documents = []
     
-    # si la réponse de l'API est un liste d'objets JSON
+    # Si la réponse de l'API est une liste d'objets JSON
     if isinstance(data, list):
         for index, item in enumerate(data):
-            if text_key and text_key in item:
+            if text_key and isinstance(item, dict) and text_key in item:
                 content = str(item[text_key])
             else:
                 content = str(item)
@@ -54,17 +55,18 @@ def load_json_api(api_url: str, text_key: str = None) -> List[Document]:
             )
             documents.append(doc)
             
-    # si la réponse de l'API est une liste d'objets JSON
+    # Si la réponse de l'API est un dictionnaire JSON (Correction du bug doc = Document)
     elif isinstance(data, dict):
-            if text_key and text_key in data:
-                content = str(data[text_key])
-            else:
-                content= str(data)
-            doc = documents(
-                page_content=content,
-                metadata={"source": api_url}
-            )
-            documents.append(doc)
+        if text_key and text_key in data:
+            content = str(data[text_key])
+        else:
+            content = str(data)
+        doc = Document(
+            page_content=content,
+            metadata={"source": api_url}
+        )
+        documents.append(doc)
+        
     return documents
 
 def process_and_index_documents(
@@ -73,11 +75,9 @@ def process_and_index_documents(
     chunk_size: int = 500,
     chunk_overlap: int = 50
 ) -> Chroma:
-    """
-    Découpe les documents en morceaux (chunks) et les sauvgarde dans ChromaDB.
-    """
+    """Découpe les documents en morceaux (chunks) et les sauvegarde dans ChromaDB."""
     
-    # 1. Découpage intellegent du texte (Chuking)
+    # 1. Découpage du texte (Chunking)
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -86,19 +86,20 @@ def process_and_index_documents(
     chunks = text_splitter.split_documents(docs)
     print(f"--> Document découpé en {len(chunks)} morceaux (chunks).")
     
-    # 2. Indexation vectorielle dans ChromaDB
+    # 2. Récupération de l'instance d'embedding
+    current_embeddings = get_embeddings()
+
+    # 3. Indexation vectorielle dans ChromaDB
     vectorstore = Chroma.from_documents(
         documents=chunks,
-        embedding=embeddings,
+        embedding=current_embeddings,
         persist_directory=db_dir
     )
-    print(f"--> Indexation terminée et sauvgaredée dans : {db_dir}")
+    print(f"--> Indexation terminée et sauvegardée dans : {db_dir}")
     return vectorstore
 
 def ingest_source(source_path_or_url: str, is_api: bool = False, api_text_key: str = None):
-    """
-    Point d'entrée principal pour l'ingestion automatique de n'importe quelle source.
-    """
+    """Point d'entrée principal pour l'ingestion automatique."""
     print(f"\n[Ingestion] Traitement de : {source_path_or_url}")
     
     if is_api:
@@ -113,7 +114,4 @@ def ingest_source(source_path_or_url: str, is_api: bool = False, api_text_key: s
     return process_and_index_documents(docs)
 
 if __name__ == "__main__":
-    # --- Test local du module dans le terminal ---
     print("Module ingest.py prêt.")
-    # Exemple d'utilisation API REST gratuite pour tester :
-    # ingest_source("https://jsonplaceholder.typicode.com/posts", is_api=True, api_text_key="body")
