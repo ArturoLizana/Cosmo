@@ -9,7 +9,7 @@ from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 
-# Charger les variables d'environnement (.env local)
+
 dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
@@ -17,11 +17,11 @@ from backend.ingest import ingest_source, CHROMA_DB_DIR
 
 app = FastAPI(
     title="Cosmo",
-    description="API REST pour le traitement de documents et le RAG (PDF, Word, API JSON)",
+    description="API REST pour le traitement de documents et le RAG",
     version="1.0.0"
 )
 
-# Nettoyage strict des origines CORS
+
 raw_origins = os.getenv("ALLOWED_ORIGINS", "https://cosmo.arlidev.fr,http://localhost:5173")
 ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
@@ -33,10 +33,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialisation du modèle d'embedding léger (FastEmbed)
-embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+# Variable globale vide au départ
+embeddings_instance = None
 
-# Utilisation d'un modèle officiel valide chez Groq (llama-3.3-70b-versatile ou llama-3.1-8b-instant)
+def get_embeddings():
+    """Charge FastEmbed uniquement quand on en a besoin pour éviter de bloquer le démarrage de Uvicorn."""
+    global embeddings_instance
+    if embeddings_instance is None:
+        embeddings_instance = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    return embeddings_instance
+
 groq_api_key = os.getenv("GROQ_API_KEY", "")
 llm = ChatGroq(
     model_name="llama-3.1-8b-instant", 
@@ -58,7 +64,7 @@ def read_root():
 
 @app.post("/ingest/file")
 async def ingest_file(file: UploadFile = File(...)):
-    """Endpoint pour ingérer un fichier PDF ou Word téléversé."""
+    
     allowed_extensions = [".pdf", ".docx"]
     file_ext = os.path.splitext(file.filename)[1].lower()
 
@@ -91,7 +97,7 @@ async def ingest_file(file: UploadFile = File(...)):
 
 @app.post("/ingest/api")
 async def ingest_api(request: APIIngestRequest):
-    """Endpoint pour ingérer le contenu JSON d'une API REST externe."""
+    
     try:
         ingest_source(request.url, is_api=True, api_text_key=request.text_key)
         return {
@@ -103,7 +109,7 @@ async def ingest_api(request: APIIngestRequest):
 
 @app.post("/query")
 async def query_rag(request: QueryRequest):
-    """Endpoint pour poser une question au RAG."""
+    
     if not os.path.exists(CHROMA_DB_DIR):
         raise HTTPException(
             status_code=400, 
@@ -111,6 +117,8 @@ async def query_rag(request: QueryRequest):
         )
 
     try:
+        # Récupération de l'instance d'embeddings via lazy loading
+        embeddings = get_embeddings()
         vectorstore = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
         retriever = vectorstore.as_retriever(search_kwargs={"k": request.top_k})
 
@@ -125,7 +133,7 @@ async def query_rag(request: QueryRequest):
 
         prompt = f"""Tu es un assistant virtuel d'entreprise rigoureux.
 Réponds à la question en t'appuyant uniquement sur le contexte ci-dessous.
-Si le contexte ne contient pas la réponse, réponds strictly : "L'information n'est pas présente dans les documents fournis."
+Si le contexte ne contient pas la réponse, réponds strictement : "L'information n'est pas présente dans les documents fournis."
 
 Contexte :
 {context_text}
