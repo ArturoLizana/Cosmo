@@ -12,39 +12,34 @@ from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 
-# Chargement des variables d'environnement (.env)
 dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
 app = FastAPI(
-    title="Cosmo",
-    description="API REST et application web pour le traitement de documents et le RAG",
+    title="Cosmo RAG",
+    description="API & Interface Chatbot RAG",
     version="1.0.0"
 )
 
-# Configuration CORS
 raw_origins = os.getenv("ALLOWED_ORIGINS", "https://cosmo.arlidev.fr,http://localhost:5173")
 ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permet la communication cross-origin globale
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Singleton pour le modèle d'embeddings (chargement différé)
 embeddings_instance = None
 
 def get_embeddings():
-    """Charge le modèle d'embeddings FastEmbed uniquement à la première requête."""
     global embeddings_instance
     if embeddings_instance is None:
         embeddings_instance = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
     return embeddings_instance
 
-# Initialisation du modèle Groq (LLM)
 groq_api_key = os.getenv("GROQ_API_KEY", "")
 llm = ChatGroq(
     model_name="llama-3.1-8b-instant", 
@@ -52,7 +47,6 @@ llm = ChatGroq(
     groq_api_key=groq_api_key if groq_api_key else None
 )
 
-# Schémas de données Pydantic
 class QueryRequest(BaseModel):
     question: str
     top_k: Optional[int] = 3
@@ -139,7 +133,7 @@ async def query_rag(request: QueryRequest):
 
         prompt = f"""Tu es un assistant virtuel d'entreprise rigoureux.
 Réponds à la question en t'appuyant uniquement sur le contexte ci-dessous.
-Si le contexte ne contient pas la réponse, réponds strictement : "L'information n'est pas présente dans les documents fournis."
+Si le contexte ne contient pas la réponse, réponds strictly : "L'information n'est pas présente dans les documents fournis."
 
 Contexte :
 {context_text}
@@ -158,24 +152,22 @@ Réponse :"""
         raise HTTPException(status_code=500, detail=f"Erreur lors du traitement : {str(e)}")
 
 
-# --- GESTION DU FRONTEND REACT ---
+# --- REDIRECTION FRONTEND REACT ---
 
 frontend_dist = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
 
-# Servir les ressources du dossier /assets si le build existe
 if os.path.exists(frontend_dist):
     assets_dir = os.path.join(frontend_dist, "assets")
     if os.path.exists(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        # Laisser passer Swagger UI et OpenAPI
-        if full_path in ["docs", "redoc", "openapi.json"] or full_path.startswith("docs/") or full_path.startswith("redoc/"):
-            raise HTTPException(status_code=404, detail="Ressource système réservée")
-            
-        file_path = os.path.join(frontend_dist, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
-            
-        return FileResponse(os.path.join(frontend_dist, "index.html"))
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    if full_path in ["docs", "redoc", "openapi.json"] or full_path.startswith("docs/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+        
+    file_path = os.path.join(frontend_dist, full_path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+        
+    return FileResponse(os.path.join(frontend_dist, "index.html"))
