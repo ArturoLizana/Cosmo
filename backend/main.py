@@ -42,7 +42,7 @@ def get_embeddings():
 
 groq_api_key = os.getenv("GROQ_API_KEY", "")
 llm = ChatGroq(
-    model_name="llama-3.1-8b-instant", 
+    model_name="llama-3.3-70b-versatile", 
     temperature=0, 
     groq_api_key=groq_api_key if groq_api_key else None
 )
