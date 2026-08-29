@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
-from backend.ingest import ingest_source, CHROMA_DB_DIR
+#from backend.ingest import ingest_source, CHROMA_DB_DIR
 
 app = FastAPI(
     title="Cosmo",
