@@ -7,7 +7,7 @@ interface Message {
 }
 
 export default function App() {
-  const API_URL = 'https://cosmo-api.arlidev.fr';
+  const API_URL = 'https://cosmo.arlidev.fr';
 
   // États UI
   const [sidebarOpen, setSidebarOpen] = useState(false);
