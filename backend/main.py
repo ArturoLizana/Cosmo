@@ -4,6 +4,8 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import FastEmbedEmbeddings
@@ -16,7 +18,7 @@ load_dotenv(dotenv_path=dotenv_path)
 
 app = FastAPI(
     title="Cosmo",
-    description="API REST pour le traitement de documents et le RAG",
+    description="API REST et application web pour le traitement de documents et le RAG",
     version="1.0.0"
 )
 
@@ -60,16 +62,10 @@ class APIIngestRequest(BaseModel):
     text_key: Optional[str] = None
 
 
-# Endpoints API
-
-@app.get("/")
-def read_root():
-    return {"message": "Bienvenue sur l'API Cosmo RAG. Consultez /docs pour la documentation Swagger."}
-
+# --- ENDPOINTS API ---
 
 @app.post("/ingest/file")
 async def ingest_file(file: UploadFile = File(...)):
-    # Import local pour éviter l'import circulaire au démarrage
     from backend.ingest import ingest_source
     
     allowed_extensions = [".pdf", ".docx"]
@@ -105,7 +101,6 @@ async def ingest_file(file: UploadFile = File(...)):
 
 @app.post("/ingest/api")
 async def ingest_api(request: APIIngestRequest):
-    # Import local pour éviter l'import circulaire au démarrage
     from backend.ingest import ingest_source
     
     try:
@@ -120,7 +115,6 @@ async def ingest_api(request: APIIngestRequest):
 
 @app.post("/query")
 async def query_rag(request: QueryRequest):
-    # Import local pour la constante du répertoire ChromaDB
     from backend.ingest import CHROMA_DB_DIR
 
     if not os.path.exists(CHROMA_DB_DIR):
@@ -162,3 +156,26 @@ Réponse :"""
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors du traitement : {str(e)}")
+
+
+# --- GESTION DU FRONTEND REACT ---
+
+frontend_dist = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+
+# Servir les ressources du dossier /assets si le build existe
+if os.path.exists(frontend_dist):
+    assets_dir = os.path.join(frontend_dist, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # Laisser passer Swagger UI et OpenAPI
+        if full_path in ["docs", "redoc", "openapi.json"] or full_path.startswith("docs/") or full_path.startswith("redoc/"):
+            raise HTTPException(status_code=404, detail="Ressource système réservée")
+            
+        file_path = os.path.join(frontend_dist, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+            
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
