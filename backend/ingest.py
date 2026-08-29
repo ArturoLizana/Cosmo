@@ -1,117 +1,152 @@
 import os
-import requests
-from typing import List, Union
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import FastEmbedEmbeddings
+import shutil
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv
 
-# Dossier par défaut pour persister ChromaDB
-CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", os.path.join(os.path.dirname(__file__), "..", "chroma_db"))
 
-# Lazy Loading de FastEmbed pour économiser la mémoire et éviter d'épuiser la RAM au démarrage
+dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+load_dotenv(dotenv_path=dotenv_path)
+
+from backend.ingest import ingest_source, CHROMA_DB_DIR
+
+app = FastAPI(
+    title="Cosmo",
+    description="API REST pour le traitement de documents et le RAG",
+    version="1.0.0"
+)
+
+
+raw_origins = os.getenv("ALLOWED_ORIGINS", "https://cosmo.arlidev.fr,http://localhost:5173")
+ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Autorise tout pour valider
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Variable globale vide au départ
 embeddings_instance = None
 
 def get_embeddings():
+    """Charge FastEmbed uniquement quand on en a besoin pour éviter de bloquer le démarrage de Uvicorn."""
     global embeddings_instance
     if embeddings_instance is None:
         embeddings_instance = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
     return embeddings_instance
 
-def load_pdf(file_path: str) -> List[Document]:
-    """Charge un fichier PDF local."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Fichier non trouvé : {file_path}")
-    loader = PyPDFLoader(file_path)
-    return loader.load()
+groq_api_key = os.getenv("GROQ_API_KEY", "")
+llm = ChatGroq(
+    model_name="llama-3.1-8b-instant", 
+    temperature=0, 
+    groq_api_key=groq_api_key if groq_api_key else None
+)
 
-def load_docx(file_path: str) -> List[Document]:
-    """Charge un fichier Word (.docx) local."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Fichier non trouvé : {file_path}")
-    loader = Docx2txtLoader(file_path)
-    return loader.load()
+class QueryRequest(BaseModel):
+    question: str
+    top_k: Optional[int] = 3
 
-def load_json_api(api_url: str, text_key: str = None) -> List[Document]:
-    """Récupère des données JSON depuis une API REST et les transforme en Documents LangChain."""
-    response = requests.get(api_url)
-    response.raise_for_status()
-    data = response.json()
+class APIIngestRequest(BaseModel):
+    url: str
+    text_key: Optional[str] = None
+
+@app.get("/")
+def read_root():
+    return {"message": "Bienvenue sur l'API Cosmo RAG. Consultez /docs pour la documentation Swagger."}
+
+@app.post("/ingest/file")
+async def ingest_file(file: UploadFile = File(...)):
     
-    documents = []
-    
-    # Si la réponse de l'API est une liste d'objets JSON
-    if isinstance(data, list):
-        for index, item in enumerate(data):
-            if text_key and isinstance(item, dict) and text_key in item:
-                content = str(item[text_key])
-            else:
-                content = str(item)
-                
-            doc = Document(
-                page_content=content,
-                metadata={"source": api_url, "item_index": index}
-            )
-            documents.append(doc)
-            
-    # Si la réponse de l'API est un dictionnaire JSON (Correction du bug doc = Document)
-    elif isinstance(data, dict):
-        if text_key and text_key in data:
-            content = str(data[text_key])
-        else:
-            content = str(data)
-        doc = Document(
-            page_content=content,
-            metadata={"source": api_url}
+    allowed_extensions = [".pdf", ".docx"]
+    file_ext = os.path.splitext(file.filename)[1].lower()
+
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400, 
+            detail="Extension non supportée. Seuls les fichiers .pdf et .docx sont acceptés."
         )
-        documents.append(doc)
-        
-    return documents
 
-def process_and_index_documents(
-    docs: List[Document],
-    db_dir: str = CHROMA_DB_DIR,
-    chunk_size: int = 500,
-    chunk_overlap: int = 50
-) -> Chroma:
-    """Découpe les documents en morceaux (chunks) et les sauvegarde dans ChromaDB."""
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+    os.makedirs(data_dir, exist_ok=True)
+    file_path = os.path.join(data_dir, file.filename)
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    try:
+        ingest_source(file_path)
+        return {
+            "status": "success",
+            "message": f"Fichier '{file.filename}' indexé avec succès.",
+            "path": file_path
+        }
+    except Exception as e:
+        print(f"Erreur d'ingestion : {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur d'ingestion : {str(e)}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+@app.post("/ingest/api")
+async def ingest_api(request: APIIngestRequest):
     
-    # 1. Découpage du texte (Chunking)
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", " ", ""]
-    )
-    chunks = text_splitter.split_documents(docs)
-    print(f"--> Document découpé en {len(chunks)} morceaux (chunks).")
+    try:
+        ingest_source(request.url, is_api=True, api_text_key=request.text_key)
+        return {
+            "status": "success",
+            "message": f"Données de l'API '{request.url}' indexées avec succès."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur d'ingestion API : {str(e)}")
+
+@app.post("/query")
+async def query_rag(request: QueryRequest):
     
-    # 2. Récupération de l'instance d'embedding
-    current_embeddings = get_embeddings()
+    if not os.path.exists(CHROMA_DB_DIR):
+        raise HTTPException(
+            status_code=400, 
+            detail="La base de données vectorielle est vide. Veuillez d'abord ingérer des documents."
+        )
 
-    # 3. Indexation vectorielle dans ChromaDB
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=current_embeddings,
-        persist_directory=db_dir
-    )
-    print(f"--> Indexation terminée et sauvegardée dans : {db_dir}")
-    return vectorstore
+    try:
+        # Récupération de l'instance d'embeddings via lazy loading
+        embeddings = get_embeddings()
+        vectorstore = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": request.top_k})
 
-def ingest_source(source_path_or_url: str, is_api: bool = False, api_text_key: str = None):
-    """Point d'entrée principal pour l'ingestion automatique."""
-    print(f"\n[Ingestion] Traitement de : {source_path_or_url}")
-    
-    if is_api:
-        docs = load_json_api(source_path_or_url, text_key=api_text_key)
-    elif source_path_or_url.lower().endswith(".pdf"):
-        docs = load_pdf(source_path_or_url)
-    elif source_path_or_url.lower().endswith(".docx"):
-        docs = load_docx(source_path_or_url)
-    else:
-        raise ValueError("Format non supporté. Fournir un PDF, Word (.docx) ou une URL API.")
+        docs = retriever.invoke(request.question)
 
-    return process_and_index_documents(docs)
+        if not docs:
+            return {
+                "answer": "Aucun document pertinent trouvé dans la base de connaissances."
+            }
 
-if __name__ == "__main__":
-    print("Module ingest.py prêt.")
+        context_text = "\n\n---\n\n".join([doc.page_content for doc in docs])
+
+        prompt = f"""Tu es un assistant virtuel d'entreprise rigoureux.
+Réponds à la question en t'appuyant uniquement sur le contexte ci-dessous.
+Si le contexte ne contient pas la réponse, réponds strictement : "L'information n'est pas présente dans les documents fournis."
+
+Contexte :
+{context_text}
+
+Question : {request.question}
+Réponse :"""
+
+        response = llm.invoke(prompt)
+        answer_text = response.content if hasattr(response, "content") else str(response)
+
+        return {
+            "answer": answer_text
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors du traitement : {str(e)}")
