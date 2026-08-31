@@ -1,6 +1,7 @@
 import os
 import shutil
 from typing import Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,14 +12,39 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
+from apscheduler.schedulers.background import BackgroundScheduler
 
 dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(dotenv_path=dotenv_path)
 
+# --- PLANIFICATEUR ET SUPPRESSION AUTOMATIQUE (2h) ---
+
+def clear_chroma_db():
+    from backend.ingest import CHROMA_DB_DIR
+    if os.path.exists(CHROMA_DB_DIR):
+        try:
+            shutil.rmtree(CHROMA_DB_DIR)
+            print("🧹 ChromaDB a été réinitialisé automatiquement (toutes les 2h).")
+        except Exception as e:
+            print(f"Erreur lors de la suppression de ChromaDB : {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Démarrage du planificateur
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(clear_chroma_db, 'interval', hours=2)
+    scheduler.start()
+    yield
+    # Arrêt du planificateur lors de l'arrêt de FastAPI
+    scheduler.shutdown()
+
+# --- INITIALISATION DE L'APPLICATION ---
+
 app = FastAPI(
     title="Cosmo RAG",
     description="API & Interface Chatbot RAG",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 raw_origins = os.getenv("ALLOWED_ORIGINS", "https://cosmo.arlidev.fr,http://localhost:5173")
